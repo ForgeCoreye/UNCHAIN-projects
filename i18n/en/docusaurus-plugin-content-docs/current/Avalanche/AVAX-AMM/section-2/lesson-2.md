@@ -1,123 +1,146 @@
 ---
-title: Understanding Swap Fees
+title: Implement the Provide Function
 ---
-### 🐣 Understand How Fees Work During Swap
 
-In the previous lesson, we looked at how token amounts in the pool increase and decrease during a swap based on a specific calculation.
+## Overview
 
-In this lesson, we’ll explore how to implement a fee mechanism for users performing swaps.
+In this lesson, we will implement the `provide` function, which allows users to add liquidity to the AMM pool. Liquidity providers deposit equal values of both tokens and receive pool shares in return.
 
-Key point:
+## How Providing Liquidity Works
 
-The token amount a user sends to the pool during a swap is slightly discounted internally within the AMM before the swap calculation is performed.
+When a user provides liquidity:
 
-In this example, we apply a 0.3％ fee（i.e., we calculate using 99.7％ of the provided amount）.
+1. They deposit an amount of Token X and a corresponding amount of Token Y
+2. The ratio of tokens must match the current pool ratio (after the first deposit)
+3. They receive shares proportional to their contribution
+4. These shares can later be redeemed to withdraw their liquidity plus any earned fees
 
-Let’s walk through a concrete example.
+## Implementing Helper Functions
 
-🦴 Scenario
+Before implementing `provide`, let's add some helper functions:
 
-Suppose the pool contains `10,000` tokens each of Token X and Token Y.
+### getEquivalentTokenAmount
 
-User A wants to perform a swap of `1,000` Token X to Token Y.
+This function calculates how much of Token Y is needed given an amount of Token X (and vice versa), based on the current pool ratio:
 
-Using the formula derived in the previous lesson（Situation 1）:
+```solidity
+/**
+ * @dev Returns the equivalent amount of the other token
+ * given one token amount, based on the current pool ratio.
+ */
+function getEquivalentTokenXAmount(
+    uint256 amountY
+) public view activePool returns (uint256) {
+    return (totalAmount[_tokenX] * amountY) / totalAmount[_tokenY];
+}
 
-![](/images/AVAX-AMM/section-2/2_2_1.png)
-
-* y': the amount of Token Y received from the swap
-* y: `10,000`
-* x': `1,000`
-* x: `10,000`
-
-🐟 Without Considering Fees
-
-![](/images/AVAX-AMM/section-2/2_2_2.png)
-
-The pool receives 1,000 Token X.
-Token Y decreases by 909.
-
-The new token amounts in the pool become `11,000` for X and `9,091` for Y.
-
-🐿️ With Fee Consideration
-
-The user specifies 1,000 Token X for the swap,
-but internally the AMM calculates with 997 after subtracting 0.3％（3 tokens）.
-
-![](/images/AVAX-AMM/section-2/2_2_3.png)
-
-The pool still receives 1,000 Token X.
-Token Y decreases by 906.
-
-The new pool balances become `11,000` Token X and `9,094` Token Y.
-
-Compared to the no-fee case:
-
-* The user receives less Token Y
-* The pool retains more Token Y
-
-If swapping from Y to X, the reverse occurs.
-
-With repeated swaps and fee deductions:
-
-* The pool accumulates extra tokens in addition to what was provided by liquidity providers
-* When a provider later withdraws their share, they receive more tokens than they originally deposited
-
-This is how liquidity providers earn fees via the swap process.
-
-### 🐔 Derive the Formula Considering Swap Fees
-
-Now that we understand the fee mechanism, let’s update the formulas from the previous lesson to include fee calculation.
-
-🦕 Situation 1: Deriving y' from x'
-
-Original formula:
-
-![](/images/AVAX-AMM/section-2/2_2_1.png)
-
-To account for a 0.3％ fee, we use 0.997x' instead of x'.
-
-Since Solidity cannot handle decimals, we scale everything by 1,000（3 digits up）:
-
-![](/images/AVAX-AMM/section-2/2_2_4.png)
-
-Dividing both sides by 1,000 gives us:
-
-![](/images/AVAX-AMM/section-2/2_2_5.png)
-
-🐬 Situation 2: Deriving x' from y'
-
-Original formula:
-
-![](/images/AVAX-AMM/section-2/2_2_6.png)
-
-Again, reduce x' by 0.3％ and scale by 1,000:
-
-![](/images/AVAX-AMM/section-2/2_2_7.png)
-
-Dividing numerator and denominator by 1,000:
-
-![](/images/AVAX-AMM/section-2/2_2_8.png)
-
-Then divide both sides by 997:
-
-![](/images/AVAX-AMM/section-2/2_2_9.png)
-
-Now we have the correct formula to calculate x'.
-
-These fee-aware formulas will now be implemented inside the AMM contract.
-
-### 🙋‍♂️ Ask Questions
-
-If you have any questions about this section, please ask in the `#avalanche` channel on Discord.
-
-To make it easier to get help, include the following in your error report:
-
-```
-1. Section and lesson number relevant to the question
-2. What you were trying to do
-3. The full error message
-4. A screenshot of the error
+function getEquivalentTokenYAmount(
+    uint256 amountX
+) public view activePool returns (uint256) {
+    return (totalAmount[_tokenY] * amountX) / totalAmount[_tokenX];
+}
 ```
 
-Now that we understand swap fees, let’s move on to the next lesson where we implement the swap function in the contract! 🎉
+## Implementing the Provide Function
+
+Now let's implement the main `provide` function:
+
+```solidity
+/**
+ * @dev Adds liquidity to the pool.
+ * @param amountX Amount of Token X to deposit.
+ * @param amountY Amount of Token Y to deposit.
+ * @return share_ The number of shares issued to the liquidity provider.
+ */
+function provide(
+    uint256 amountX,
+    uint256 amountY
+) external returns (uint256 share_) {
+    require(amountX > 0, "AMM: Amount of token X must be greater than 0");
+    require(amountY > 0, "AMM: Amount of token Y must be greater than 0");
+
+    if (totalShare == 0) {
+        // Initial liquidity provision
+        share_ = 100 * PRECISION;
+    } else {
+        // Subsequent liquidity provision: verify ratio and calculate shares
+        uint256 shareX = (totalShare * amountX) / totalAmount[_tokenX];
+        uint256 shareY = (totalShare * amountY) / totalAmount[_tokenY];
+        require(
+            shareX == shareY,
+            "AMM: Provided amounts must be equivalent in value"
+        );
+        share_ = shareX;
+    }
+
+    require(share_ > 0, "AMM: Share amount too small");
+
+    // Transfer tokens from the user to the contract
+    _tokenX.transferFrom(msg.sender, address(this), amountX);
+    _tokenY.transferFrom(msg.sender, address(this), amountY);
+
+    // Update pool state
+    totalAmount[_tokenX] += amountX;
+    totalAmount[_tokenY] += amountY;
+    totalShare += share_;
+    share[msg.sender] += share_;
+}
+```
+
+## Understanding the Logic
+
+### First Liquidity Provider
+
+When the pool is empty (`totalShare == 0`), the first liquidity provider sets the initial price ratio. They receive a fixed amount of shares (100 * PRECISION in our implementation). This is an arbitrary starting value.
+
+### Subsequent Liquidity Providers
+
+For subsequent providers, we calculate shares based on their contribution relative to the existing pool:
+
+```
+share = (totalShare * amountDeposited) / totalPoolAmount
+```
+
+We calculate this for both tokens and verify they are equal. If they are not equal, it means the user is not providing liquidity at the correct ratio, so the transaction reverts.
+
+### Token Transfers
+
+We use `transferFrom` to pull tokens from the user's wallet into the contract. This requires the user to have first called `approve` on both token contracts, granting the AMM contract permission to spend their tokens.
+
+## Testing the Provide Function
+
+Here's an example of how to test the `provide` function in your test file:
+
+```typescript
+it("Should provide liquidity and issue shares", async function () {
+  const amountX = ethers.parseEther("100");
+  const amountY = ethers.parseEther("200");
+
+  // Approve token transfers
+  await tokenX.connect(user).approve(amm.target, amountX);
+  await tokenY.connect(user).approve(amm.target, amountY);
+
+  // Provide liquidity
+  const tx = await amm.connect(user).provide(amountX, amountY);
+  await tx.wait();
+
+  // Verify shares were issued
+  const userShare = await amm.share(user.address);
+  expect(userShare).to.be.gt(0);
+
+  // Verify pool balances updated
+  expect(await amm.totalAmount(tokenX.target)).to.equal(amountX);
+  expect(await amm.totalAmount(tokenY.target)).to.equal(amountY);
+});
+```
+
+## Summary
+
+In this lesson, you:
+
+1. Learned how liquidity provision works in an AMM
+2. Implemented helper functions to calculate equivalent token amounts
+3. Implemented the `provide` function with proper validation
+4. Understood the difference between the first and subsequent liquidity providers
+
+In the next lesson, we will implement the `swap` function that allows users to trade between tokens.
